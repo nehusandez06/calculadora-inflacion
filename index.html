@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Calculadora de Inflación · INDEC</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: Helvetica, Arial, sans-serif;
+      background: #f0f0f0;
+      color: #111;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 16px 64px;
+    }
+    .wrap { width: 100%; max-width: 420px; }
+
+    h1 { font-size: 20px; font-weight: bold; margin-bottom: 2px; }
+    .sub { font-size: 12px; color: #666; margin-bottom: 28px; }
+
+    .card { background: #fff; border-radius: 4px; padding: 20px; margin-bottom: 12px; }
+
+    .field { margin-bottom: 14px; }
+    .field:last-child { margin-bottom: 0; }
+    label { display: block; font-size: 11px; font-weight: bold; color: #555; margin-bottom: 4px; }
+
+    input[type="number"], select {
+      width: 100%;
+      font-family: Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      padding: 8px 10px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #fff;
+      color: #111;
+      appearance: none;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: #111; }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    .divider {
+      font-size: 11px; font-weight: bold; color: #999;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      margin: 18px 0 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #eee;
+    }
+
+    button {
+      width: 100%; margin-top: 4px;
+      background: #111; color: #fff;
+      border: none; border-radius: 3px;
+      font-family: Helvetica, Arial, sans-serif;
+      font-size: 13px; font-weight: bold;
+      letter-spacing: 0.05em; text-transform: uppercase;
+      padding: 12px; cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #333; }
+    button:disabled { background: #bbb; cursor: not-allowed; }
+
+    /* resultado */
+    .result {
+      background: #111; color: #fff;
+      border-radius: 4px; padding: 20px;
+      margin-bottom: 12px; display: none;
+    }
+    .result-label { font-size: 11px; color: #888; margin-bottom: 6px; }
+    .result-amount { font-size: 34px; font-weight: bold; letter-spacing: -1px; line-height: 1; margin-bottom: 14px; word-break: break-all; }
+    .result-line { font-size: 12px; color: #aaa; line-height: 1.8; }
+    .result-line strong { color: #fff; }
+    .result-sep { border: none; border-top: 1px solid #333; margin: 12px 0; }
+    .result-factor { display: flex; justify-content: space-between; font-size: 12px; color: #888; }
+    .result-factor span:last-child { color: #fff; font-weight: bold; }
+
+    .error {
+      font-size: 12px; color: #c00;
+      padding: 10px; border-radius: 3px;
+      background: #fff8f8; border: 1px solid #f5c0c0;
+      margin-bottom: 12px; display: none;
+    }
+
+    footer { font-size: 11px; color: #999; text-align: center; line-height: 1.8; margin-top: 4px; }
+    footer a { color: #999; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Calculadora de inflación</h1>
+  <p class="sub" id="sub">Cargando datos del INDEC…</p>
+
+  <div class="error" id="err"></div>
+
+  <div class="card">
+    <div class="field">
+      <label>Monto en pesos</label>
+      <input type="number" id="monto" placeholder="10000" min="0" step="any" disabled/>
+    </div>
+
+    <div class="divider">Mes de origen</div>
+    <div class="row">
+      <div class="field">
+        <label>Mes</label>
+        <select id="mes-orig" disabled></select>
+      </div>
+      <div class="field">
+        <label>Año</label>
+        <select id="anio-orig" disabled></select>
+      </div>
+    </div>
+
+    <div class="divider">Mes de destino</div>
+    <div class="row">
+      <div class="field">
+        <label>Mes</label>
+        <select id="mes-dest" disabled></select>
+      </div>
+      <div class="field">
+        <label>Año</label>
+        <select id="anio-dest" disabled></select>
+      </div>
+    </div>
+
+    <button id="btn" onclick="calcular()" disabled>Calcular</button>
+  </div>
+
+  <div class="result" id="result">
+    <p class="result-label">Equivale en pesos de <span id="r-dest"></span></p>
+    <div class="result-amount" id="r-monto"></div>
+    <p class="result-line" id="r-detalle"></p>
+    <hr class="result-sep"/>
+    <div class="result-factor">
+      <span>Factor de ajuste</span>
+      <span id="r-factor"></span>
+    </div>
+  </div>
+
+  <footer>
+    Fuente: <a href="https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_divisiones.csv" target="_blank">INDEC · serie_ipc_divisiones.csv</a><br>
+    IPC Nivel General Nacional · Base diciembre 2016 = 100
+  </footer>
+
+</div>
+<script>
+const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+               'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+let ipc = {}; // "YYYYMM" -> índice
+
+// ── Parsear CSV ───────────────────────────────────────────────────────────
+function parsearCSV(text) {
+  // Normalizar saltos de línea y encoding
+  const lineas = text.replace(/\r/g, '').split('\n');
+  // headers: Codigo;Descripcion;Clasificador;Periodo;Indice_IPC;v_m_IPC;v_i_a_IPC;Region
+  for (let i = 1; i < lineas.length; i++) {
+    const cols = lineas[i].split(';');
+    if (cols.length < 8) continue;
+    const codigo = cols[0].trim();
+    const region = cols[7].trim();
+    if (codigo !== '0' || region !== 'Nacional') continue;
+    const periodo = cols[3].trim(); // "YYYYMM"
+    const val = parseFloat(cols[4].replace(',', '.'));
+    if (periodo && !isNaN(val)) ipc[periodo] = val;
+  }
+}
+
+// ── Cargar CSV via proxy CORS ─────────────────────────────────────────────
+async function cargar() {
+  const CSV_URL = 'https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_divisiones.csv';
+  const PROXIES = [
+    `https://corsproxy.io/?${encodeURIComponent(CSV_URL)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(CSV_URL)}`,
+    `https://cors-anywhere.herokuapp.com/${CSV_URL}`,
+  ];
+
+  let text = null;
+  for (const url of PROXIES) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (res.ok) { text = await res.text(); break; }
+    } catch {}
+  }
+  if (!text) throw new Error('No se pudo acceder al archivo. Intentá recargar la página.');
+  parsearCSV(text);
+  const claves = Object.keys(ipc).sort();
+  if (claves.length === 0) throw new Error('El archivo no contiene datos reconocibles.');
+  return claves;
+}
+
+// ── Poblar selects ────────────────────────────────────────────────────────
+function poblarSelects(claves) {
+  const primera = claves[0];
+  const ultima  = claves[claves.length - 1];
+  const anioMin = parseInt(primera.slice(0, 4));
+  const anioMax = parseInt(ultima.slice(0, 4));
+  const mesUlt  = parseInt(ultima.slice(4, 6));
+
+  ['mes-orig','mes-dest'].forEach(id => {
+    const sel = document.getElementById(id);
+    MESES.forEach((m, i) => {
+      const o = document.createElement('option');
+      o.value = String(i + 1).padStart(2, '0');
+      o.textContent = m;
+      sel.appendChild(o);
+    });
+  });
+
+  ['anio-orig','anio-dest'].forEach((id, idx) => {
+    const sel = document.getElementById(id);
+    for (let y = anioMin; y <= anioMax; y++) {
+      const o = document.createElement('option');
+      o.value = y; o.textContent = y;
+      sel.appendChild(o);
+    }
+    sel.value = idx === 0 ? anioMax - 1 : anioMax;
+  });
+
+  document.getElementById('mes-orig').value = String(mesUlt).padStart(2,'0');
+  document.getElementById('mes-dest').value = String(mesUlt).padStart(2,'0');
+  // si el año anterior no tiene ese mes, ponemos el primer mes disponible del año
+  const anioOrig = anioMax - 1;
+  const claveTest = `${anioOrig}${String(mesUlt).padStart(2,'0')}`;
+  if (!ipc[claveTest]) document.getElementById('mes-orig').value = '01';
+
+  ['monto','mes-orig','anio-orig','mes-dest','anio-dest'].forEach(id =>
+    document.getElementById(id).disabled = false
+  );
+  document.getElementById('btn').disabled = false;
+
+  const labelUltima = `${MESES[mesUlt - 1]} ${anioMax}`;
+  document.getElementById('sub').textContent = `IPC Nacional INDEC · Datos hasta ${labelUltima}`;
+}
+
+// ── Formatear pesos ───────────────────────────────────────────────────────
+function fmt(n) {
+  return new Intl.NumberFormat('es-AR', {
+    style: 'currency', currency: 'ARS',
+    minimumFractionDigits: 2, maximumFractionDigits: 2
+  }).format(n);
+}
+
+// ── Calcular ──────────────────────────────────────────────────────────────
+function calcular() {
+  const monto   = parseFloat(document.getElementById('monto').value);
+  const mesO    = document.getElementById('mes-orig').value;
+  const anioO   = document.getElementById('anio-orig').value;
+  const mesD    = document.getElementById('mes-dest').value;
+  const anioD   = document.getElementById('anio-dest').value;
+
+  const errEl   = document.getElementById('err');
+  const resEl   = document.getElementById('result');
+  errEl.style.display = 'none';
+
+  const kO = `${anioO}${mesO}`;
+  const kD = `${anioD}${mesD}`;
+
+  if (!monto || isNaN(monto) || monto <= 0) {
+    errEl.textContent = 'Ingresá un monto mayor a cero.';
+    errEl.style.display = 'block'; return;
+  }
+  if (kO === kD) {
+    errEl.textContent = 'El mes de origen y destino son iguales.';
+    errEl.style.display = 'block'; return;
+  }
+  if (!ipc[kO]) {
+    errEl.textContent = `Sin datos para ${MESES[parseInt(mesO)-1]} ${anioO}.`;
+    errEl.style.display = 'block'; return;
+  }
+  if (!ipc[kD]) {
+    errEl.textContent = `Sin datos para ${MESES[parseInt(mesD)-1]} ${anioD}.`;
+    errEl.style.display = 'block'; return;
+  }
+
+  const factor  = ipc[kD] / ipc[kO];
+  const result  = monto * factor;
+  const varPct  = ((factor - 1) * 100).toFixed(1);
+  const signo   = factor >= 1 ? '+' : '';
+  const lO = `${MESES[parseInt(mesO)-1]} ${anioO}`;
+  const lD = `${MESES[parseInt(mesD)-1]} ${anioD}`;
+
+  document.getElementById('r-dest').textContent    = lD;
+  document.getElementById('r-monto').textContent   = fmt(result);
+  document.getElementById('r-detalle').innerHTML   =
+    `<strong>${fmt(monto)}</strong> de ${lO} → <strong>${fmt(result)}</strong> de ${lD}<br>` +
+    `Inflación acumulada: <strong>${signo}${varPct}%</strong>`;
+  document.getElementById('r-factor').textContent  = `×${factor.toFixed(4)}`;
+
+  resEl.style.display = 'block';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Enter') calcular(); });
+
+// ── Init ──────────────────────────────────────────────────────────────────
+(async () => {
+  const errEl = document.getElementById('err');
+  try {
+    const claves = await cargar();
+    poblarSelects(claves);
+  } catch (e) {
+    document.getElementById('sub').textContent = 'Error al cargar los datos.';
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  }
+})();
+</script>
+</body>
+</html>
