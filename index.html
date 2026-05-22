@@ -63,7 +63,6 @@
     button:hover:not(:disabled) { background: #333; }
     button:disabled { background: #bbb; cursor: not-allowed; }
 
-    /* resultado */
     .result {
       background: #111; color: #fff;
       border-radius: 4px; padding: 20px;
@@ -100,6 +99,11 @@
     <div class="field">
       <label>Monto en pesos</label>
       <input type="number" id="monto" placeholder="10000" min="0" step="any" disabled/>
+    </div>
+
+    <div class="field">
+      <label>Región</label>
+      <select id="region" disabled></select>
     </div>
 
     <div class="divider">Mes de origen</div>
@@ -142,7 +146,7 @@
 
   <footer>
     Fuente: <a href="https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_divisiones.csv" target="_blank">INDEC · serie_ipc_divisiones.csv</a><br>
-    IPC Nivel General Nacional · Base diciembre 2016 = 100
+    IPC Nivel General · Base diciembre 2016 = 100
   </footer>
 
 </div>
@@ -150,34 +154,38 @@
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
                'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
-let ipc = {}; // "YYYYMM" -> índice
+const REGIONES = ['Nacional','GBA','Pampeana','Noreste','Noroeste','Cuyo','Patagonia'];
+
+// ipc["Region"]["YYYYMM"] = índice
+let ipc = {};
 
 // ── Parsear CSV ───────────────────────────────────────────────────────────
 function parsearCSV(text) {
-  // Normalizar saltos de línea y encoding
   const lineas = text.replace(/\r/g, '').split('\n');
-  // headers: Codigo;Descripcion;Clasificador;Periodo;Indice_IPC;v_m_IPC;v_i_a_IPC;Region
   for (let i = 1; i < lineas.length; i++) {
     const cols = lineas[i].split(';');
     if (cols.length < 8) continue;
-    const codigo = cols[0].trim();
-    const region = cols[7].trim();
-    if (codigo !== '0' || region !== 'Nacional') continue;
-    const periodo = cols[3].trim(); // "YYYYMM"
-    const val = parseFloat(cols[4].replace(',', '.'));
-    if (periodo && !isNaN(val)) ipc[periodo] = val;
+    const codigo  = cols[0].trim();
+    const region  = cols[7].trim();
+    if (codigo !== '0') continue;             // solo nivel general
+    if (!REGIONES.includes(region)) continue;
+    const periodo = cols[3].trim();           // "YYYYMM"
+    const val     = parseFloat(cols[4].replace(',', '.'));
+    if (!periodo || isNaN(val)) continue;
+    if (!ipc[region]) ipc[region] = {};
+    ipc[region][periodo] = val;
   }
 }
 
-// ── Cargar CSV local (mismo repo) ────────────────────────────────────────
+// ── Cargar CSV local ──────────────────────────────────────────────────────
 async function cargar() {
   const res = await fetch('serie_ipc_divisiones.csv');
   if (!res.ok) throw new Error(`No se pudo cargar el CSV (HTTP ${res.status}).`);
   const text = await res.text();
   parsearCSV(text);
-  const claves = Object.keys(ipc).sort();
-  if (claves.length === 0) throw new Error('El archivo no contiene datos reconocibles.');
-  return claves;
+  if (!ipc['Nacional'] || Object.keys(ipc['Nacional']).length === 0)
+    throw new Error('El archivo no contiene datos reconocibles.');
+  return Object.keys(ipc['Nacional']).sort();
 }
 
 // ── Poblar selects ────────────────────────────────────────────────────────
@@ -188,6 +196,16 @@ function poblarSelects(claves) {
   const anioMax = parseInt(ultima.slice(0, 4));
   const mesUlt  = parseInt(ultima.slice(4, 6));
 
+  // Región
+  const selReg = document.getElementById('region');
+  REGIONES.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r; o.textContent = r;
+    selReg.appendChild(o);
+  });
+  selReg.value = 'Nacional';
+
+  // Meses
   ['mes-orig','mes-dest'].forEach(id => {
     const sel = document.getElementById(id);
     MESES.forEach((m, i) => {
@@ -198,6 +216,7 @@ function poblarSelects(claves) {
     });
   });
 
+  // Años
   ['anio-orig','anio-dest'].forEach((id, idx) => {
     const sel = document.getElementById(id);
     for (let y = anioMin; y <= anioMax; y++) {
@@ -210,18 +229,14 @@ function poblarSelects(claves) {
 
   document.getElementById('mes-orig').value = String(mesUlt).padStart(2,'0');
   document.getElementById('mes-dest').value = String(mesUlt).padStart(2,'0');
-  // si el año anterior no tiene ese mes, ponemos el primer mes disponible del año
-  const anioOrig = anioMax - 1;
-  const claveTest = `${anioOrig}${String(mesUlt).padStart(2,'0')}`;
-  if (!ipc[claveTest]) document.getElementById('mes-orig').value = '01';
 
-  ['monto','mes-orig','anio-orig','mes-dest','anio-dest'].forEach(id =>
+  ['monto','region','mes-orig','anio-orig','mes-dest','anio-dest'].forEach(id =>
     document.getElementById(id).disabled = false
   );
   document.getElementById('btn').disabled = false;
 
   const labelUltima = `${MESES[mesUlt - 1]} ${anioMax}`;
-  document.getElementById('sub').textContent = `IPC Nacional INDEC · Datos hasta ${labelUltima}`;
+  document.getElementById('sub').textContent = `IPC INDEC · Datos hasta ${labelUltima}`;
 }
 
 // ── Formatear pesos ───────────────────────────────────────────────────────
@@ -234,18 +249,20 @@ function fmt(n) {
 
 // ── Calcular ──────────────────────────────────────────────────────────────
 function calcular() {
-  const monto   = parseFloat(document.getElementById('monto').value);
-  const mesO    = document.getElementById('mes-orig').value;
-  const anioO   = document.getElementById('anio-orig').value;
-  const mesD    = document.getElementById('mes-dest').value;
-  const anioD   = document.getElementById('anio-dest').value;
+  const monto  = parseFloat(document.getElementById('monto').value);
+  const region = document.getElementById('region').value;
+  const mesO   = document.getElementById('mes-orig').value;
+  const anioO  = document.getElementById('anio-orig').value;
+  const mesD   = document.getElementById('mes-dest').value;
+  const anioD  = document.getElementById('anio-dest').value;
 
-  const errEl   = document.getElementById('err');
-  const resEl   = document.getElementById('result');
+  const errEl  = document.getElementById('err');
+  const resEl  = document.getElementById('result');
   errEl.style.display = 'none';
 
   const kO = `${anioO}${mesO}`;
   const kD = `${anioD}${mesD}`;
+  const serie = ipc[region] || {};
 
   if (!monto || isNaN(monto) || monto <= 0) {
     errEl.textContent = 'Ingresá un monto mayor a cero.';
@@ -255,28 +272,28 @@ function calcular() {
     errEl.textContent = 'El mes de origen y destino son iguales.';
     errEl.style.display = 'block'; return;
   }
-  if (!ipc[kO]) {
-    errEl.textContent = `Sin datos para ${MESES[parseInt(mesO)-1]} ${anioO}.`;
+  if (!serie[kO]) {
+    errEl.textContent = `Sin datos para ${MESES[parseInt(mesO)-1]} ${anioO} (${region}).`;
     errEl.style.display = 'block'; return;
   }
-  if (!ipc[kD]) {
-    errEl.textContent = `Sin datos para ${MESES[parseInt(mesD)-1]} ${anioD}.`;
+  if (!serie[kD]) {
+    errEl.textContent = `Sin datos para ${MESES[parseInt(mesD)-1]} ${anioD} (${region}).`;
     errEl.style.display = 'block'; return;
   }
 
-  const factor  = ipc[kD] / ipc[kO];
-  const result  = monto * factor;
-  const varPct  = ((factor - 1) * 100).toFixed(1);
-  const signo   = factor >= 1 ? '+' : '';
+  const factor = serie[kD] / serie[kO];
+  const result = monto * factor;
+  const varPct = ((factor - 1) * 100).toFixed(1);
+  const signo  = factor >= 1 ? '+' : '';
   const lO = `${MESES[parseInt(mesO)-1]} ${anioO}`;
   const lD = `${MESES[parseInt(mesD)-1]} ${anioD}`;
 
-  document.getElementById('r-dest').textContent    = lD;
-  document.getElementById('r-monto').textContent   = fmt(result);
-  document.getElementById('r-detalle').innerHTML   =
+  document.getElementById('r-dest').textContent  = lD;
+  document.getElementById('r-monto').textContent = fmt(result);
+  document.getElementById('r-detalle').innerHTML =
     `<strong>${fmt(monto)}</strong> de ${lO} → <strong>${fmt(result)}</strong> de ${lD}<br>` +
-    `Inflación acumulada: <strong>${signo}${varPct}%</strong>`;
-  document.getElementById('r-factor').textContent  = `×${factor.toFixed(4)}`;
+    `Región: <strong>${region}</strong> · Inflación acumulada: <strong>${signo}${varPct}%</strong>`;
+  document.getElementById('r-factor').textContent = `×${factor.toFixed(4)}`;
 
   resEl.style.display = 'block';
 }
