@@ -169,23 +169,11 @@ function parsearCSV(text) {
   }
 }
 
-// ── Cargar CSV via proxy CORS ─────────────────────────────────────────────
+// ── Cargar CSV local (mismo repo) ────────────────────────────────────────
 async function cargar() {
-  const CSV_URL = 'https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_divisiones.csv';
-  const PROXIES = [
-    `https://corsproxy.io/?${encodeURIComponent(CSV_URL)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(CSV_URL)}`,
-    `https://cors-anywhere.herokuapp.com/${CSV_URL}`,
-  ];
-
-  let text = null;
-  for (const url of PROXIES) {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (res.ok) { text = await res.text(); break; }
-    } catch {}
-  }
-  if (!text) throw new Error('No se pudo acceder al archivo. Intentá recargar la página.');
+  const res = await fetch('serie_ipc_divisiones.csv');
+  if (!res.ok) throw new Error(`No se pudo cargar el CSV (HTTP ${res.status}).`);
+  const text = await res.text();
   parsearCSV(text);
   const claves = Object.keys(ipc).sort();
   if (claves.length === 0) throw new Error('El archivo no contiene datos reconocibles.');
